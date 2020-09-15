@@ -26,6 +26,7 @@ const isAuth_1 = require("../middleware/isAuth");
 const type_graphql_1 = require("type-graphql");
 const Post_1 = require("../entities/Post");
 const typeorm_1 = require("typeorm");
+const Updoot_1 = require("../entities/Updoot");
 let PostInput = class PostInput {
 };
 __decorate([
@@ -61,28 +62,49 @@ let PostResolver = class PostResolver {
             const isUpdoot = value !== -1;
             const realValue = isUpdoot ? 1 : -1;
             const { userId } = req.session;
-            yield typeorm_1.getConnection().query(`
-      START TRANSACTION;
-
-      INSERT INTO updoot ("userId", "postId", value)
-      VALUES (${userId}, ${postId}, ${realValue});
-
-      UPDATE post
-      SET points = points + ${realValue}
-      WHERE id = ${postId};
-
-      COMMIT;
-    `);
+            const updoot = yield Updoot_1.Updoot.findOne({ where: { postId, userId } });
+            if (updoot && updoot.value !== realValue) {
+                yield typeorm_1.getConnection().transaction((tm) => __awaiter(this, void 0, void 0, function* () {
+                    yield tm.query(`
+          UPDATE updoot
+          SET value = $1
+          WHERE "postId" = $2 AND "userId" = $3
+        `, [realValue, postId, userId]);
+                    yield tm.query(`
+          UPDATE post
+          SET points = points + $1
+          WHERE id = $2
+        `, [2 * realValue, postId]);
+                }));
+            }
+            else if (!updoot) {
+                yield typeorm_1.getConnection().transaction((tm) => __awaiter(this, void 0, void 0, function* () {
+                    yield tm.query(`
+          INSERT INTO updoot ("userId", "postId", value)
+          VALUES ($1, $2, $3);
+        `, [userId, postId, realValue]);
+                    yield tm.query(`
+          UPDATE post
+          SET points = points + $1
+          WHERE id = $2;
+        `, [realValue, postId]);
+                }));
+            }
             return true;
         });
     }
-    posts(limit, cursor) {
+    posts(limit, cursor, { req }) {
         return __awaiter(this, void 0, void 0, function* () {
             const realLimit = Math.min(50, limit);
             const realLimitPlusOne = realLimit + 1;
             const replacements = [realLimitPlusOne];
+            if (req.session.userId) {
+                replacements.push(req.session.userId);
+            }
+            let cursorIdx = 3;
             if (cursor) {
                 replacements.push(new Date(parseInt(cursor)));
+                cursorIdx = replacements.length;
             }
             const posts = yield typeorm_1.getConnection().query(`
       SELECT 
@@ -93,10 +115,13 @@ let PostResolver = class PostResolver {
         'email', u.email,
         'createdAt', u."createdAt",
         'updatedAt', u."updatedAt"
-      ) creator
+      ) creator,
+      ${req.session.userId
+                ? '(SELECT value FROM updoot WHERE "userId" = $2 AND "postId" = p.id) "voteStatus"'
+                : 'null as "voteStatus'}
       FROM post p
       INNER JOIN public.user u ON u.id = p."creatorId"
-      ${cursor ? `WHERE p."createdAt" < $2` : ""}
+      ${cursor ? `WHERE p."createdAt" < $${cursorIdx}` : ""}
       ORDER BY p."createdAt" DESC
       LIMIT $1
     `, replacements);
@@ -107,7 +132,7 @@ let PostResolver = class PostResolver {
         });
     }
     post(id) {
-        return Post_1.Post.findOne(id);
+        return Post_1.Post.findOne(id, { relations: ["creator"] });
     }
     createPost(input, { req }) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -126,9 +151,9 @@ let PostResolver = class PostResolver {
             return post;
         });
     }
-    deletePost(id) {
+    deletePost(id, { req }) {
         return __awaiter(this, void 0, void 0, function* () {
-            yield Post_1.Post.delete(id);
+            yield Post_1.Post.delete({ id, creatorId: req.session.userId });
             return true;
         });
     }
@@ -154,8 +179,9 @@ __decorate([
     type_graphql_1.Query(() => PaginatedPosts),
     __param(0, type_graphql_1.Arg("limit", () => type_graphql_1.Int)),
     __param(1, type_graphql_1.Arg("cursor", () => String, { nullable: true })),
+    __param(2, type_graphql_1.Ctx()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Number, Object]),
+    __metadata("design:paramtypes", [Number, Object, Object]),
     __metadata("design:returntype", Promise)
 ], PostResolver.prototype, "posts", null);
 __decorate([
@@ -184,9 +210,11 @@ __decorate([
 ], PostResolver.prototype, "updatePost", null);
 __decorate([
     type_graphql_1.Mutation(() => Boolean),
-    __param(0, type_graphql_1.Arg("id")),
+    type_graphql_1.UseMiddleware(isAuth_1.isAuth),
+    __param(0, type_graphql_1.Arg("id", () => type_graphql_1.Int)),
+    __param(1, type_graphql_1.Ctx()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Number]),
+    __metadata("design:paramtypes", [Number, Object]),
     __metadata("design:returntype", Promise)
 ], PostResolver.prototype, "deletePost", null);
 PostResolver = __decorate([
